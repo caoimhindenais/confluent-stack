@@ -1,0 +1,111 @@
+version: '3'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:5.1.2
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-enterprise-kafka:5.1.2
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: kafka:9092
+      CONFLUENT_METRICS_REPORTER_ZOOKEEPER_CONNECT: zookeeper:2181
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'false'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+  dataflow-server:
+    image: springcloud/spring-cloud-dataflow-server:${DATAFLOW_VERSION:?DATAFLOW_VERSION is not set!}
+    container_name: dataflow-server
+    ports:
+      - "9393:9393"
+    environment:
+      - spring.cloud.dataflow.applicationProperties.stream.spring.cloud.stream.kafka.binder.brokers=kafka:9092
+      - spring.cloud.dataflow.applicationProperties.stream.spring.cloud.stream.kafka.binder.zkNodes=zookeeper:2181
+      - spring.cloud.skipper.client.serverUri=http://skipper-server:7577/api
+#      - spring.cloud.dataflow.applicationProperties.stream.management.metrics.export.influx.enabled=true
+#     - spring.cloud.dataflow.applicationProperties.stream.management.metrics.export.influx.db=myinfluxdb
+#      - spring.cloud.dataflow.applicationProperties.stream.management.metrics.export.influx.uri=http://influxdb:8086
+      - spring.cloud.dataflow.grafana-info.url=http://localhost:3000
+      - spring.cloud.dataflow.applicationProperties.stream.management.metrics.export.prometheus.enabled=true
+      - spring.cloud.dataflow.applicationProperties.stream.spring.cloud.streamapp.security.enabled=false
+      - spring.cloud.dataflow.applicationProperties.stream.management.endpoints.web.exposure.include=prometheus,info,health
+    depends_on:
+      - kafka
+  prometheus:
+    image: prom/prometheus:v2.7.1
+    container_name: 'prometheus'
+    volumes:
+      - 'scdf-targets:/etc/prometheus/'
+      - './prometheus-local-file.yml:/etc/prometheus/prometheus.yml'
+    ports:
+      - '9090:9090'
+  app-import:
+    image: springcloud/openjdk:latest
+    depends_on:
+      - dataflow-server
+    command: >
+      /bin/sh -c "
+        while ! nc -z dataflow-server 9393;
+        do
+          sleep 1;
+        done;
+        wget -qO- 'http://dataflow-server:9393/apps' --post-data='uri=http://bit.ly/Einstein-GA-stream-applications-kafka-maven&force=true';
+        echo 'Stream apps imported'
+        wget -qO- 'http://dataflow-server:9393/apps' --post-data='uri=http://bit.ly/Dearborn-SR1-task-applications-maven&force=true';
+        echo 'Task apps imported'"
+  skipper-server:
+    image: springcloud/spring-cloud-skipper-server:${SKIPPER_VERSION:?SKIPPER_VERSION is not set!}
+    container_name: skipper
+    ports:
+    - "7577:7577"
+    - "9000-9010:9000-9010"
+
+  influxdb:
+    image: influxdb:1.7.4
+    container_name: 'influxdb'
+    ports:
+      - '8086:8086'
+
+  grafana:
+#    image: springcloud/spring-cloud-dataflow-grafana-influxdb:${DATAFLOW_VERSION:?DATAFLOW_VERSION is not set!}
+    image: springcloud/spring-cloud-dataflow-grafana-prometheus:${DATAFLOW_VERSION:?DATAFLOW_VERSION is not set!}
+    container_name: 'grafana'
+    ports:
+      - '3000:3000'
+
+  # The service-discovery container.
+  # Use `docker exec -it service-discovery /bin/sh` to logging the container
+  service-discovery:
+    image: springcloud/spring-cloud-dataflow-prometheus-service-discovery:0.0.2
+    container_name: 'service-discovery'
+    volumes:
+      - 'scdf-targets:/tmp/scdf-targets/'
+    expose:
+      - '8181'
+    ports:
+      - '8181:8181'
+    environment:
+      - 'SCDF_HOST_IP=${SCDF_HOST_IP:?SCDF_HOST_IP is not set!
+      Use "export SCDF_HOST_IP=<SCDF Server IP>". Note: 127.0.0.1 is not a valid option!}'
+volumes:
+  scdf-targets:
